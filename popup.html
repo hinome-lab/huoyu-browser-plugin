@@ -193,17 +193,17 @@
   <div class="opt">
     <label class="chk"><input type="checkbox" id="showJa">显示日语原文</label>
   </div>
-  <div class="opt">
-    <label class="chk"><input type="checkbox" id="onlyThisRoom">仅在火羽直播间（22748536）生效</label>
-  </div>
 
   <div class="ft">
     <button id="reconnect">重新探测线路</button>
     <button id="openRoom" class="pri">打开直播间</button>
   </div>
 
+  <div class="sec">支持的直播间</div>
+  <div id="roomList"></div>
+
   <div class="note">
-    <b>提示：</b>刷新直播页后配置即时生效。字幕通过扩展后台长连接获取，页面本身的脚本不会碰这两个 http 地址。
+    <b>提示：</b>只有下面这几个直播间会显示字幕，进别的直播间插件完全不工作。每条直播间用的是各自独立的字幕服务器，互不干扰。
   </div>
 </div>
 

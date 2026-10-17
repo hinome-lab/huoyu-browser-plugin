@@ -2,43 +2,58 @@
  * 火羽直播实时字幕 — background (MV3 service worker)
  *
  * 职责：
- *   1. 探测两台字幕服务器的健康度，自动选一台好的
+ *   1. 按直播间归属，探测该房间对应的字幕服务器组，挑最优的一台
  *   2. 通过 offscreen 文档维持到 /events 的 SSE 长连接
  *      （bilibili 是 https，字幕服务器是 http，content script 里直接连会被
  *        混合内容拦截；扩展的 offscreen 页面是特权上下文，不受此限制）
- *   3. 把 SSE 事件转发给所有 B 站直播页的 content script
+ *   3. 把 SSE 事件转发给「同房间」的直播页，别的直播间一概不打扰
  * ============================================================= */
 
 'use strict';
 
 const KEY = 'hy';
 
-const SERVERS = [
-  { id: 's1', label: '线路一', base: 'http://123.60.104.22:6006' },
-  { id: 's2', label: '线路二', base: 'http://106.15.35.175:6006' }
-];
+/* 每个直播间对应一组字幕服务器，互相独立、不能串台 */
+const ROOMS = {
+  '22748536': {
+    label: '火羽ひのめ',
+    servers: [
+      { id: 'hy1', label: '线路一', base: 'http://123.60.104.22:6006' },
+      { id: 'hy2', label: '线路二', base: 'http://106.15.35.175:6006' }
+    ]
+  },
+  '21399689': {
+    label: 'Milky_Vtuber',
+    servers: [
+      { id: 'mk1', label: '线路一', base: 'http://123.60.104.22:6007' },
+      { id: 'mk2', label: '线路二', base: 'http://8.133.231.186:6006' }
+    ]
+  }
+};
+
+const ALL_SERVERS = Object.values(ROOMS).reduce((a, r) => a.concat(r.servers), []);
+const SERVER_IDS = new Set(ALL_SERVERS.map(s => s.id));
 
 const DEFAULT_CFG = {
   enabled: true,
-  serverMode: 'auto',   // auto | s1 | s2
+  serverMode: 'auto',   // auto 或某个服务器 id（如 hy1 / mk2）
   fontSize: 26,
   maxLines: 3,
   showJa: true,
   bottomPct: 11,
-  delay: 0,
-  onlyThisRoom: true,
-  roomId: '22748536'
+  delay: 0
 };
 
-const MAX_CACHE = 400;      // 缓存多少条字幕用于新页面秒回填
-const PROBE_TIMEOUT = 1800; // 健康探测超时
+const MAX_CACHE = 400;
+const PROBE_TIMEOUT = 1800;
 const RETRY_LADDER = [1500, 3000, 6000, 12000, 25000, 45000];
 
 /* ---------- 运行时状态（SW 可能随时休眠，关键项持久化到 session） ---------- */
 const S = {
   sse: 'idle',        // idle | connecting | open | error
-  activeId: null,
-  health: {},         // id -> 探测结果
+  activeRoom: '',     // 当前正在服务的直播间
+  activeId: null,     // 当前连的服务器 id
+  health: {},         // serverId -> 探测结果
   lastEventAt: 0,
   lastError: '',
   failCount: 0,
@@ -61,6 +76,47 @@ async function setCfg(patch) {
   await chrome.storage.sync.set(patch);
 }
 
+/* =========================== 服务器 / 房间工具 =========================== */
+
+function serversOf(room) {
+  return (ROOMS[room] && ROOMS[room].servers) || [];
+}
+
+function roomLabel(room) {
+  return (ROOMS[room] && ROOMS[room].label) || ('房间 ' + room);
+}
+
+function findServer(id) {
+  return ALL_SERVERS.find(s => s.id === id) || null;
+}
+
+function roomOfServer(id) {
+  for (const [room, cfg] of Object.entries(ROOMS)) {
+    if (cfg.servers.some(s => s.id === id)) return room;
+  }
+  return '';
+}
+
+function roomFromUrl(u) {
+  try {
+    const m = new URL(u).pathname.match(/^\/(\d{1,12})/);
+    return m ? m[1] : '';
+  } catch (_) { return ''; }
+}
+
+function serverByUrl(u) {
+  try {
+    const h = new URL(u).hostname;
+    const port = new URL(u).port || '80';
+    return ALL_SERVERS.find(s => {
+      try {
+        const x = new URL(s.base);
+        return x.hostname === h && (x.port || '80') === port;
+      } catch (_) { return false; }
+    }) || null;
+  } catch (_) { return null; }
+}
+
 /* =========================== 状态持久化 =========================== */
 
 async function persist() {
@@ -68,6 +124,7 @@ async function persist() {
     await chrome.storage.session.set({
       hyState: {
         sse: S.sse,
+        activeRoom: S.activeRoom,
         activeId: S.activeId,
         health: S.health,
         lastError: S.lastError,
@@ -75,7 +132,7 @@ async function persist() {
         snap: SNAPMETA
       }
     });
-  } catch (_) { /* session storage 不可用时忽略 */ }
+  } catch (_) {}
 }
 
 async function restore() {
@@ -86,7 +143,6 @@ async function restore() {
     S.lastError = hyState.lastError || '';
     S.failCount = hyState.failCount || 0;
     SNAPMETA = hyState.snap || null;
-    // sse 不恢复成 open：SW 重启后连接状态未知，交给 offscreen 的 state 消息纠正
   } catch (_) {}
 }
 
@@ -117,7 +173,6 @@ async function ensureOffscreen() {
       });
       return true;
     } catch (e) {
-      // 已存在时 createDocument 会抛错，这里视为成功
       if (String(e && e.message).includes('single offscreen')) return true;
       S.lastError = '创建后台通道失败：' + (e && e.message);
       return false;
@@ -136,7 +191,7 @@ async function closeOffscreen() {
 
 /* =========================== 健康探测 =========================== */
 
-function scoreFrom(id, j, lat) {
+function scoreFrom(server, j, lat, expectRoom) {
   const msg = String(j.msg || '');
   const net = j.net || {};
   let score = 100;
@@ -148,6 +203,10 @@ function scoreFrom(id, j, lat) {
   if (net.warn === true) score -= 18;
   if (typeof net.used_pct === 'number' && net.used_pct > 85) score -= 25;
 
+  // 服务器报的房间号对不上，说明连错站点了，重罚
+  const srvRoom = j.room ? String(j.room) : '';
+  if (srvRoom && expectRoom && srvRoom !== expectRoom) score -= 120;
+
   if (lat <= 120) score += 22;
   else if (lat <= 350) score += 12;
   else if (lat <= 900) score += 2;
@@ -155,21 +214,20 @@ function scoreFrom(id, j, lat) {
   else score -= 40;
 
   return {
-    id, score,
+    id: server.id, room: srvRoom, score,
     ok: j.ok === true,
     lat,
     connected: j.connected === true,
     viewers: typeof j.viewers === 'number' ? j.viewers : null,
     used_pct: typeof net.used_pct === 'number' ? net.used_pct : null,
     warn: net.warn === true,
-    room: j.room || null,
     source: j.source || '',
     reason: msg || '正常',
     at: Date.now()
   };
 }
 
-async function probeOne(server) {
+async function probeOne(server, expectRoom) {
   const t0 = performance.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT);
@@ -182,23 +240,22 @@ async function probeOne(server) {
     const lat = Math.round(performance.now() - t0);
     if (!res.ok) {
       return {
-        id: server.id,
+        id: server.id, room: '',
         score: res.status === 429 ? -1000 : -600,
         ok: false, lat, connected: false, viewers: null, used_pct: null, warn: false,
-        room: null, source: '',
+        source: '',
         reason: res.status === 429 ? '人数已满（429）' : ('HTTP ' + res.status),
         at: Date.now()
       };
     }
-    const j = await res.json();
-    return scoreFrom(server.id, j, lat);
+    return scoreFrom(server, await res.json(), lat, expectRoom);
   } catch (e) {
     return {
-      id: server.id,
+      id: server.id, room: '',
       score: -900,
       ok: false, lat: Math.round(performance.now() - t0),
       connected: false, viewers: null, used_pct: null, warn: false,
-      room: null, source: '',
+      source: '',
       reason: (e && e.name === 'AbortError') ? '探测超时' : '连接失败',
       at: Date.now()
     };
@@ -207,8 +264,10 @@ async function probeOne(server) {
   }
 }
 
-async function probeAll() {
-  const out = await Promise.all(SERVERS.map(probeOne));
+async function probeRoom(room) {
+  const pool = serversOf(room);
+  if (!pool.length) return [];
+  const out = await Promise.all(pool.map(s => probeOne(s, room)));
   out.forEach(r => { S.health[r.id] = r; });
   S.probeAt = Date.now();
   await persist();
@@ -216,19 +275,6 @@ async function probeAll() {
 }
 
 /* =========================== 选路 & 连接 =========================== */
-
-function serverById(id) {
-  return SERVERS.find(s => s.id === id) || null;
-}
-
-function serverByUrl(u) {
-  try {
-    const h = new URL(u).hostname;
-    return SERVERS.find(s => {
-      try { return new URL(s.base).hostname === h; } catch (_) { return false; }
-    }) || null;
-  } catch (_) { return null; }
-}
 
 function clearRetry() {
   if (S.retryTimer) { clearTimeout(S.retryTimer); S.retryTimer = 0; }
@@ -241,20 +287,26 @@ function scheduleRetry(why) {
   S.failCount += 1;
   S.retryTimer = setTimeout(() => {
     S.retryTimer = 0;
-    chooseAndConnect('retry:' + why);
+    chooseAndConnect('retry:' + why, S.activeRoom);
   }, wait);
   persist();
 }
 
 async function connectTo(id) {
-  const server = serverById(id);
+  const server = findServer(id);
   if (!server) return;
+
+  // 服务器必须属于当前房间，否则会串台
+  const room = roomOfServer(id);
+  if (room && S.activeRoom && room !== S.activeRoom) return;
+
   clearRetry();
   S.activeId = id;
   S.sse = 'connecting';
   S.lastError = '';
   await persist();
   pushState();
+  broadcastToTabs({ kind: 'conn', sse: S.sse, serverId: id });
 
   const ok = await ensureOffscreen();
   if (!ok) {
@@ -289,27 +341,43 @@ async function connectTo(id) {
   }
 }
 
-async function chooseAndConnect(reason) {
+async function chooseAndConnect(reason, room) {
   const cfg = await getCfg();
-  if (!cfg.enabled) {
+  const target = room || S.activeRoom;
+
+  if (!cfg.enabled || !target || !ROOMS[target]) {
     await stopEverything();
     return;
   }
 
-  if (cfg.serverMode !== 'auto') {
-    const fixed = serverById(cfg.serverMode);
-    if (fixed) { connectTo(fixed.id); return; }
+  // 切房间：先让旧房间的页面安静下来，再清空上一间的数据，避免串台
+  if (S.activeRoom && S.activeRoom !== target) {
+    await notifyRoomEnd(S.activeRoom);
+    CACHE = [];
+    SNAPMETA = null;
+    S.health = {};
+  }
+  S.activeRoom = target;
+  await persist();
+
+  const pool = serversOf(target);
+  if (!pool.length) { await stopEverything(); return; }
+
+  // 手动锁定：只在服务器确实属于当前房间时才生效
+  if (cfg.serverMode !== 'auto' && SERVER_IDS.has(cfg.serverMode) && roomOfServer(cfg.serverMode) === target) {
+    connectTo(cfg.serverMode);
+    return;
   }
 
-  const results = await probeAll();
+  const results = await probeRoom(target);
   const ranked = results.slice().sort((a, b) => b.score - a.score);
   const best = ranked[0];
 
-  // 两台都不健康（限流 / 全挂）：退避后再试，别硬连
   if (!best || best.score <= -500) {
     S.sse = 'error';
     S.lastError = best ? best.reason : '没有可用服务器';
     pushState();
+    broadcastToTabs({ kind: 'conn', sse: 'error', reason: S.lastError });
     scheduleRetry(reason || 'all-bad');
     return;
   }
@@ -320,8 +388,12 @@ async function chooseAndConnect(reason) {
 
 async function stopEverything() {
   clearRetry();
+  broadcastToTabs({ kind: 'conn', sse: 'idle' });  // 趁 activeRoom 还在，先通知页面收场
   S.sse = 'idle';
   S.activeId = null;
+  S.activeRoom = '';
+  CACHE = [];
+  SNAPMETA = null;
   await persist();
   try { await chrome.runtime.sendMessage({ target: 'offscreen', cmd: 'close' }); } catch (_) {}
   await closeOffscreen();
@@ -346,10 +418,10 @@ function handleSseEvent(payload) {
   S.lastEventAt = Date.now();
 
   if (payload.type === 'move') {
-    // 服务器主动要求换线路："线路繁忙，正在为你切换到更快的线路"
+    // 服务器要求换线路
     const tgt = serverByUrl(payload.url);
-    if (tgt && tgt.id !== S.activeId) {
-      broadcastToTabs({ kind: 'notice', text: '线路繁忙，已自动切换到' + tgt.label });
+    if (tgt && tgt.id !== S.activeId && roomOfServer(tgt.id) === S.activeRoom) {
+      broadcastToTabs({ kind: 'notice', text: '线路繁忙，已自动切换' });
       connectTo(tgt.id);
     }
     return;
@@ -364,6 +436,14 @@ function handleSseEvent(payload) {
   }
 
   if (payload.type === 'snapshot') {
+    // 防御：服务器推来的房间必须和当前服务的一致
+    const srvRoom = payload.room && payload.room.id ? String(payload.room.id) : '';
+    if (srvRoom && S.activeRoom && srvRoom !== S.activeRoom) {
+      S.lastError = '服务器房间不匹配（' + srvRoom + '）';
+      pushState();
+      return;
+    }
+
     CACHE = [];
     (payload.lines || []).forEach(dedupePush);
     SNAPMETA = {
@@ -394,7 +474,7 @@ function handleSseEvent(payload) {
 
 /* =========================== 与页面通信 =========================== */
 
-async function liveTabs() {
+async function allLiveTabs() {
   try {
     return await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
   } catch (_) {
@@ -402,11 +482,25 @@ async function liveTabs() {
   }
 }
 
+/* 只发给当前服务的那个房间，别的直播间一律不打扰 */
 async function broadcastToTabs(msg) {
-  const tabs = await liveTabs();
+  const tabs = await allLiveTabs();
   for (const t of tabs) {
+    if (S.activeRoom && roomFromUrl(t.url) !== S.activeRoom) continue;
     try {
       chrome.tabs.sendMessage(t.id, { target: 'content', ...msg }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
+}
+
+/* 通知某个房间的页面：后台不再服务它了 */
+async function notifyRoomEnd(room) {
+  const tabs = await allLiveTabs();
+  for (const t of tabs) {
+    if (roomFromUrl(t.url) !== room) continue;
+    try {
+      chrome.tabs.sendMessage(t.id, { target: 'content', kind: 'room-off' },
+        () => void chrome.runtime.lastError);
     } catch (_) {}
   }
 }
@@ -414,24 +508,29 @@ async function broadcastToTabs(msg) {
 function snapshotForUi() {
   return {
     sse: S.sse,
+    activeRoom: S.activeRoom,
     activeId: S.activeId,
     health: S.health,
     lastEventAt: S.lastEventAt,
     lastError: S.lastError,
     failCount: S.failCount,
     meta: SNAPMETA,
-    cacheSize: CACHE.length
+    cacheSize: CACHE.length,
+    rooms: Object.keys(ROOMS),
+    roomMeta: Object.fromEntries(
+      Object.entries(ROOMS).map(([id, r]) => [id, { label: r.label, servers: r.servers }])
+    )
   };
 }
 
 async function pushState() {
-  const state = snapshotForUi();
   try {
-    chrome.runtime.sendMessage({ target: 'ui', kind: 'state', state }, () => void chrome.runtime.lastError);
+    chrome.runtime.sendMessage({ target: 'ui', kind: 'state', state: snapshotForUi() },
+      () => void chrome.runtime.lastError);
   } catch (_) {}
 }
 
-/* 让新打开的直播页立即拿到已有字幕：向 offscreen 要缓存 */
+/* 让直播页立刻拿到已有字幕 */
 async function requestResync(tabId) {
   if (!tabId || !(await hasOffscreen())) return;
   try {
@@ -472,10 +571,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     persist();
     pushState();
-    return;
-  }
-
-  if (msg.target === 'bg' && msg.kind === 'resync-data') {
+    broadcastToTabs({ kind: 'conn', sse: S.sse, reason: S.lastError });
     return;
   }
 
@@ -485,26 +581,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg.kind) {
       case 'hello': {
-        // 直播页加载完成
+        const room = msg.room || (sender.tab && roomFromUrl(sender.tab.url)) || '';
+        const supported = !!ROOMS[room];
         const cfg = await getCfg();
-        if (cfg.enabled && S.sse === 'idle') chooseAndConnect('hello');
-        if (cfg.enabled && S.sse === 'open') requestResync(sender.tab && sender.tab.id);
-        sendResponse({ ok: true, cfg, state: snapshotForUi() });
+
+        if (supported && cfg.enabled) {
+          // 不阻塞首屏：探测 + 建连放到后台跑，页面上会收到 conn 事件再亮起
+          if (S.activeRoom !== room || S.sse === 'idle') {
+            chooseAndConnect('hello', room).catch(() => {});
+          } else if (S.sse === 'open' && sender.tab) {
+            requestResync(sender.tab.id);
+          }
+        } else if (!supported) {
+          // 进了不受支持的直播间：没有别的页面在用它就把连接收掉
+          if (S.activeRoom === room) {
+            await stopEverything();
+          } else if (S.activeRoom) {
+            const tabs = await allLiveTabs();
+            const stillServed = tabs.some(t => roomFromUrl(t.url) === S.activeRoom);
+            if (!stillServed) await stopEverything();
+          }
+        }
+
+        sendResponse({
+          ok: true,
+          cfg,
+          supported,
+          serving: S.activeRoom === room && (S.sse === 'open' || S.sse === 'connecting'),
+          state: snapshotForUi()
+        });
         break;
       }
+
       case 'getStatus': {
-        // 若长时间没探测过，顺手刷一次
-        if (Date.now() - S.probeAt > 20000) {
-          probeAll().then(() => pushState());
+        if (S.activeRoom && Date.now() - S.probeAt > 20000) {
+          probeRoom(S.activeRoom).then(() => pushState());
         }
         const cfg = await getCfg();
         sendResponse({ ok: true, cfg, state: snapshotForUi() });
         break;
       }
+
       case 'setEnabled': {
         await setCfg({ enabled: !!msg.value });
         if (msg.value) {
-          await chooseAndConnect('toggle-on');
+          const room = msg.room || S.activeRoom;
+          if (ROOMS[room]) await chooseAndConnect('toggle-on', room);
         } else {
           await stopEverything();
           broadcastToTabs({ kind: 'disabled' });
@@ -512,26 +634,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
+
       case 'setCfg': {
         await setCfg(msg.patch || {});
         const cfg = await getCfg();
         broadcastToTabs({ kind: 'cfg', cfg });
-        if (Object.prototype.hasOwnProperty.call(msg.patch || {}, 'serverMode')) {
-          chooseAndConnect('mode-change');
+        if (Object.prototype.hasOwnProperty.call(msg.patch || {}, 'serverMode') && S.activeRoom) {
+          chooseAndConnect('mode-change', S.activeRoom);
         }
         sendResponse({ ok: true, cfg });
         break;
       }
+
       case 'reconnect': {
-        chooseAndConnect('manual');
+        const room = msg.room || S.activeRoom;
+        if (ROOMS[room]) chooseAndConnect('manual', room);
         sendResponse({ ok: true });
         break;
       }
+
       case 'pick': {
-        if (msg.id) connectTo(msg.id);
+        if (msg.id && findServer(msg.id)) connectTo(msg.id);
         sendResponse({ ok: true });
         break;
       }
+
       default:
         sendResponse({ ok: false, error: 'unknown kind' });
     }
@@ -542,20 +669,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
+/* =========================== 标签页切换 =========================== */
+
+/* 同时开着几个直播间时，跟随当前激活的那个 */
+chrome.tabs.onActivated.addListener(async (info) => {
+  try {
+    const tab = await chrome.tabs.get(info.tabId);
+    if (!tab.url || !tab.url.includes('live.bilibili.com')) return;
+    const room = roomFromUrl(tab.url);
+    if (!room) return;
+
+    const cfg = await getCfg();
+    if (!cfg.enabled) return;
+
+    if (ROOMS[room]) {
+      if (S.activeRoom !== room) await chooseAndConnect('tab-focus', room);
+    }
+  } catch (_) {}
+});
+
 /* =========================== 生命周期 =========================== */
 
 chrome.runtime.onInstalled.addListener(() => {
-  // 只有确实有直播页打开时才去连，别白占服务器名额
   restore().then(() => getCfg().then(cfg => {
     if (!cfg.enabled) return;
-    liveTabs().then(tabs => { if (tabs.length) chooseAndConnect('install'); });
+    allLiveTabs().then(tabs => {
+      const room = tabs.map(t => roomFromUrl(t.url)).find(r => ROOMS[r]);
+      if (room) chooseAndConnect('install', room);
+    });
   }));
 });
 
 chrome.runtime.onStartup.addListener(() => {
   restore().then(() => getCfg().then(cfg => {
     if (!cfg.enabled) return;
-    liveTabs().then(tabs => { if (tabs.length) chooseAndConnect('startup'); });
+    allLiveTabs().then(tabs => {
+      const room = tabs.map(t => roomFromUrl(t.url)).find(r => ROOMS[r]);
+      if (room) chooseAndConnect('startup', room);
+    });
   }));
 });
 
@@ -563,16 +714,18 @@ chrome.runtime.onSuspend.addListener(() => {
   persist();
 });
 
-/* 配置变化（用户在其他窗口改设置） */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'sync') return;
   getCfg().then(cfg => {
     if (Object.prototype.hasOwnProperty.call(changes, 'enabled')) {
-      if (changes.enabled.newValue) chooseAndConnect('cfg-on');
-      else stopEverything();
+      if (changes.enabled.newValue) {
+        if (S.activeRoom) chooseAndConnect('cfg-on', S.activeRoom);
+      } else {
+        stopEverything();
+      }
     }
-    if (Object.prototype.hasOwnProperty.call(changes, 'serverMode') && cfg.enabled) {
-      chooseAndConnect('cfg-mode');
+    if (Object.prototype.hasOwnProperty.call(changes, 'serverMode') && cfg.enabled && S.activeRoom) {
+      chooseAndConnect('cfg-mode', S.activeRoom);
     }
     broadcastToTabs({ kind: 'cfg', cfg });
   });

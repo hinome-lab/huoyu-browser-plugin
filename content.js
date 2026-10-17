@@ -22,9 +22,7 @@
     maxLines: 3,
     showJa: true,
     bottomPct: 11,
-    delay: 0,
-    onlyThisRoom: true,
-    roomId: '22748536'
+    delay: 0
   };
 
   let cfg = Object.assign({}, DEFAULTS);
@@ -35,6 +33,8 @@
   let renderedKey = '';
   let active = false;      // 当前页面是否该显示字幕
   let lastRoom = '';
+  let supported = null;    // Set：有字幕服务的直播间，null 表示还没问到
+  let serving = false;     // 后台当前是否正在服务本房间
 
   /* ------------------------------ Shadow 宿主 ------------------------------ */
 
@@ -381,6 +381,15 @@
     return false;
   }
 
+  let updTimer = 0;
+  function scheduleUpd() {
+    if (updTimer) return;
+    updTimer = setTimeout(function () {
+      updTimer = 0;
+      if (active) render();
+    }, 140);
+  }
+
   function handleSse(d) {
     if (!d || !active) return;
 
@@ -401,9 +410,9 @@
         break;
 
       case 'line_upd': {
-        if (applyPatch(d.id, d.zh)) {
-          updateTexts(visibleLines().slice(-Math.max(1, cfg.maxLines)));
-        }
+        // 译文是渐进推送的（"就" → "就这咔嗒咔嗒…每天都得弄好长时间呢。"），
+        // 每条都立刻重绘会看到逐字跳动，这里合并一下只渲染最后的结果
+        if (applyPatch(d.id, d.zh)) scheduleUpd();
         break;
       }
 
@@ -435,15 +444,18 @@
 
   function evaluateActive() {
     const room = currentRoom();
-    const roomOk = !cfg.onlyThisRoom || room === String(cfg.roomId);
-    const wasActive = active;
-    active = !!cfg.enabled && !!room && roomOk;
 
     if (room !== lastRoom) {
       lastRoom = room;
       lines = [];
       renderedKey = '';
     }
+
+    // 只在这个直播间有字幕服务、且后台正在服务它的时候才显示；
+    // 进了别人的直播间，插件完全静默。
+    const known = !!supported && supported.has(room);
+    const wasActive = active;
+    active = !!cfg.enabled && !!room && known && serving;
 
     if (host) {
       if (!active) {
@@ -502,6 +514,21 @@
       case 'notice':
         if (active) showToast(msg.text);
         break;
+      case 'conn':
+        // 后台连接状态变化：只有连上了（或正在连）才算正在服务本房间
+        serving = msg.sse === 'open' || msg.sse === 'connecting';
+        evaluateActive();
+        if (active) { createHost(); sync(); render(); }
+        if (msg.sse === 'error' && msg.reason) showToast('字幕连接：' + msg.reason, 4000);
+        break;
+      case 'room-off':
+        // 后台转去服务别的直播间了，这边安静收场
+        serving = false;
+        lines = [];
+        renderedKey = '';
+        evaluateActive();
+        render();
+        break;
       case 'disabled':
         active = false;
         if (host) host.style.display = 'none';
@@ -515,15 +542,22 @@
   /* ------------------------------ 启动 ------------------------------ */
 
   function boot() {
+    const room = currentRoom();
     try {
-      chrome.runtime.sendMessage({ target: 'bg', kind: 'hello' }, function (res) {
+      chrome.runtime.sendMessage({ target: 'bg', kind: 'hello', room }, function (res) {
         if (chrome.runtime.lastError) {
           // 扩展刚重载 / 后台还没醒，稍后重试
           setTimeout(boot, 1200);
           return;
         }
         if (!res || !res.ok) return;
+
+        const rooms = (res.state && res.state.rooms) || [];
+        supported = new Set(rooms);
+        serving = !!res.supported && !!res.serving;
+
         applyCfg(res.cfg);
+
         if (active) {
           createHost();
           sync();
@@ -543,8 +577,9 @@
   setInterval(function () {
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
-      evaluateActive();
-      if (active) { createHost(); sync(); render(); }
+      // 换了直播间要重新问后台：这个房间有没有字幕服务
+      boot();
+      return;
     }
     if (active) sync();
   }, 800);

@@ -33,15 +33,28 @@
 /* 1) 打桩 chrome API，让 content.js 以为自己在真实扩展里 */
 const CFG = {
   enabled: true, serverMode: 'auto', fontSize: 26, maxLines: 3,
-  showJa: true, bottomPct: 11, delay: 0, onlyThisRoom: false, roomId: '22748536'
+  showJa: true, bottomPct: 11, delay: 0
 };
+const ROOM = (location.pathname.match(/^\/(\d{1,12})/) || [])[1] || '';
+const SUPPORTED = ['22748536', '21399689'].includes(ROOM);
 let listener = null;
 
 window.chrome = {
   runtime: {
     lastError: null,
     sendMessage(msg, cb) {
-      if (cb) cb({ ok: true, cfg: CFG, state: { sse: 'open', activeId: 's1', health: {}, lastError: '', meta: null } });
+      if (cb) {
+        cb({
+          ok: true, cfg: CFG,
+          supported: SUPPORTED,
+          serving: SUPPORTED,
+          state: {
+            sse: 'open', activeRoom: SUPPORTED ? ROOM : '', activeId: 'hy1',
+            health: {}, lastError: '', meta: null,
+            rooms: ['22748536', '21399689'], roomMeta: {}
+          }
+        });
+      }
     },
     onMessage: { addListener(fn) { listener = fn; } }
   }
