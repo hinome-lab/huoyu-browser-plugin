@@ -22,6 +22,7 @@
 
 <div id="barbox">
   mock 直播间：真实可播放的 &lt;video&gt; + 弹幕层。字幕出现即说明 content.js 的定位与渲染正常。
+  <div id="dbg" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:#7fd4a0;white-space:pre-wrap"></div>
 </div>
 
 <div id="live-player">
@@ -39,7 +40,7 @@ const CFG = {
   maxLines: num('ml', 3),
   showJa: QS.get('ja') !== '0',
   bottomPct: num('bp', 11),     // ?bp=28 试抬高位
-  delay: 0
+  delay: num('delay', 0)        // ?delay=10 试延迟补偿
 };
 const ROOM = (location.pathname.match(/^\/(\d{1,12})/) || [])[1] || '';
 const SUPPORTED = ['22748536', '21399689'].includes(ROOM);
@@ -120,22 +121,100 @@ function emit(line) {
   listener({ target: 'content', kind: 'sse', data: { type: 'line', line: Object.assign({ id: seq++ }, line) } });
 }
 
+/* ?snap=1：改用 snapshot 一次性灌入，且带上真实感的时间戳（每 2 秒一条），
+   用来验证历史字幕是否也受延迟窗口约束 */
+function emitSnapshot() {
+  if (!listener) return;
+  const now = Date.now() / 1000;
+  const arr = SAMPLE.map(function (s, i) {
+    return {
+      id: 100 + i,
+      ja: s.ja,
+      zh: s.zh,
+      ts: now - (SAMPLE.length - 1 - i) * 2,
+      t: '',
+      el: 0
+    };
+  });
+  listener({
+    target: 'content', kind: 'sse',
+    data: { type: 'snapshot', lines: arr, dms: [], connected: true,
+            room: { id: Number(ROOM), name: 'mock' }, live: { live: 1 } }
+  });
+}
+
+const USE_SNAP = QS.get('snap') === '1';
+
+/* 把实际生效的定位参数打到页面上，方便排查排版问题 */
+function dumpDebug() {
+  const h = document.getElementById('hy-live-sub-host');
+  const sr = h && h.shadowRoot;
+  const w = sr && sr.querySelector('.wrap');
+  const v = document.getElementById('v');
+  const rows = sr ? sr.querySelectorAll('.row').length : 0;
+  const dbg = document.getElementById('dbg');
+  if (!dbg) return;
+  if (!h || !w) {
+    dbg.textContent = 'overlay: 未创建（active=false？）';
+    return;
+  }
+  const hr = h.getBoundingClientRect();
+  const wr = w.getBoundingClientRect();
+  const ws = getComputedStyle(w);
+  const hs = getComputedStyle(h);
+  dbg.textContent = [
+    'video  ' + Math.round(v.getBoundingClientRect().height) + 'px 高',
+    'host   ' + Math.round(hr.width) + '×' + Math.round(hr.height) +
+      '  top=' + Math.round(hr.top) + '  bottom=' + Math.round(hr.bottom),
+    'host   position=' + hs.position + '  contain=' + hs.contain,
+    'wrap   position=' + ws.position + '  bottom=' + ws.bottom +
+      '  offsetParent=' + (w.offsetParent ? w.offsetParent.tagName : 'null'),
+    '--hy-size=' + (h.style.getPropertyValue('--hy-size') || '(空)') +
+      '  --hy-bottom=' + (h.style.getPropertyValue('--hy-bottom') || '(空)'),
+    'wrap   rect top=' + Math.round(wr.top) + ' bottom=' + Math.round(wr.bottom) +
+      ' 行数=' + rows + '  innerHeight=' + window.innerHeight
+  ].join('\n');
+}
+
+function settle() {
+  const h = document.getElementById('hy-live-sub-host');
+  if (h && h.shadowRoot) {
+    h.shadowRoot.querySelectorAll('.row').forEach(function (r) {
+      r.style.animation = 'none';
+      r.style.opacity = '1';
+    });
+  }
+  dumpDebug();
+  document.title = 'READY';
+}
+
 setTimeout(function () {
+  if (USE_SNAP) {
+    emitSnapshot();
+    setTimeout(settle, 600);
+    return;
+  }
+
   emit(SAMPLE[0]);
   setTimeout(function () { emit(SAMPLE[1]); }, 400);
   setTimeout(function () {
     emit(SAMPLE[2]);
+    setTimeout(settle, 500);
+  }, 900);
+
+  // ?cfgdelay=8：加载后中途改一次 delay，模拟用户在设置面板拖动滑块
+  const cfgDelay = QS.get('cfgdelay');
+  if (cfgDelay != null) {
     setTimeout(function () {
-      const h = document.getElementById('hy-live-sub-host');
-      if (h && h.shadowRoot) {
-        h.shadowRoot.querySelectorAll('.row').forEach(function (r) {
-          r.style.animation = 'none';
-          r.style.opacity = '1';
+      if (listener) {
+        listener({
+          target: 'content', kind: 'cfg',
+          cfg: Object.assign({}, CFG, { delay: Number(cfgDelay) })
         });
       }
-      document.title = 'READY';
-    }, 500);
-  }, 900);
+      setTimeout(dumpDebug, 200);
+    }, 2500);
+  }
 }, 700);
 </script>
 

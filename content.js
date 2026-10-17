@@ -170,9 +170,10 @@
     toastEl.className = 'toast';
 
     wrapEl.appendChild(linesEl);
-    wrapEl.appendChild(toastEl);
     root.appendChild(style);
     root.appendChild(wrapEl);
+    // toast 挂在宿主下、wrap 之外：字幕为空时 wrap 是透明的，提示不能被它带走
+    root.appendChild(toastEl);
     document.body.appendChild(host);
   }
 
@@ -376,6 +377,19 @@
     if (lines.length > 200) lines = lines.slice(-120);
   }
 
+  /* 一次补来的一批字幕（snapshot / backfill）该落在什么时间点上？
+     不能一律当成「刚收到」，否则它们会永远压在延迟窗口之外、赖在屏幕上不消失，
+     新字幕反而被挡住。用服务器给的 ts 以「最后一条 = 现在」往前推算。 */
+  function stampLines(arr) {
+    const now = Date.now();
+    const last = arr.length ? (arr[arr.length - 1].ts || 0) : 0;
+    return arr.map(function (l) {
+      const ts = l.ts || 0;
+      const back = (last && ts) ? Math.max(0, (last - ts) * 1000) : 0;
+      return Object.assign({}, l, { _at: now - back });
+    });
+  }
+
   function applyPatch(id, zh) {
     for (let i = lines.length - 1; i >= 0; i--) {
       if (lines[i].id === id) { lines[i].zh = zh; return true; }
@@ -397,9 +411,7 @@
 
     switch (d.type) {
       case 'snapshot':
-        lines = (d.lines || []).map(function (l) {
-          return Object.assign({}, l, { _at: 0 });
-        }).slice(-120);
+        lines = stampLines(d.lines || []).slice(-120);
         if (d.room) meta = Object.assign({}, meta, { room: d.room });
         if (d.live) meta = Object.assign({}, meta, { live: d.live });
         render();
@@ -478,11 +490,17 @@
         cfg.fontSize !== prev.fontSize || cfg.delay !== prev.delay) {
       renderedKey = '';
     }
+    const delayChanged = cfg.delay !== prev.delay;
+
     const isActive = evaluateActive();
     if (isActive) {
       createHost();
       render();
       sync();
+      // 延迟是"看不见"的设置，给一句明确反馈，免得以为没生效
+      if (delayChanged) {
+        showToast(cfg.delay ? ('字幕延迟 ' + cfg.delay + ' 秒') : '字幕延迟已关闭', 1800);
+      }
     }
   }
 
@@ -497,9 +515,7 @@
         break;
       case 'backfill':
         if (active) {
-          lines = (msg.lines || []).map(function (l) {
-            return Object.assign({}, l, { _at: 0 });
-          }).slice(-120);
+          lines = stampLines(msg.lines || []).slice(-120);
           if (msg.meta) meta = msg.meta;
           renderedKey = '';
           render();
