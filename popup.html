@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>火羽直播实时字幕</title>
+<style>
+  :root {
+    --bg: #101018;
+    --card: #17171f;
+    --card2: #1d1d28;
+    --bd: #2a2a38;
+    --txt: #e8e8f0;
+    --dim: #8a8a9c;
+    --acc: #3d5afe;
+    --ok: #3ddc84;
+    --warn: #ffb020;
+    --bad: #e5484d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 332px;
+    background: var(--bg);
+    color: var(--txt);
+    font: 13px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .hd {
+    display: flex; align-items: center; gap: 9px;
+    padding: 13px 14px 11px;
+    border-bottom: 1px solid var(--bd);
+  }
+  .logo {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    background: linear-gradient(145deg, #2b3350, #14141c);
+    border: 1px solid #3a3a52;
+    display: flex; flex-direction: column; justify-content: center;
+    align-items: center; gap: 2.5px;
+  }
+  .logo i { display: block; height: 2px; border-radius: 1px; background: #fff; }
+  .logo i:nth-child(1) { width: 13px; background: #dfe6ff; }
+  .logo i:nth-child(2) { width: 16px; background: #9fb4ff; }
+  .logo i:nth-child(3) { width: 9px; background: #5c6a8f; }
+  .ttl { font-size: 13.5px; font-weight: 600; letter-spacing: .2px; }
+  .ttl small { display: block; font-size: 10.5px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
+
+  /* 开关 */
+  .sw { margin-left: auto; flex: none; position: relative; width: 40px; height: 22px; }
+  .sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .sw span {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: #33333f; transition: background .18s; cursor: pointer;
+  }
+  .sw span::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; transition: transform .18s;
+  }
+  .sw input:checked + span { background: var(--acc); }
+  .sw input:checked + span::after { transform: translateX(18px); }
+
+  .body { padding: 12px 14px 14px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--bd);
+    border-radius: 11px;
+    padding: 10px 11px;
+    margin-bottom: 13px;
+  }
+  .row { display: flex; align-items: center; gap: 7px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(61,220,132,.55); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .grow { flex: 1; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+  .tag {
+    font-size: 10.5px; color: var(--dim);
+    background: var(--card2); border: 1px solid var(--bd);
+    border-radius: 6px; padding: 1px 6px; white-space: nowrap;
+  }
+  .meta { margin-top: 7px; font-size: 11.5px; color: var(--dim); line-height: 1.55; word-break: break-all; }
+
+  .sec {
+    font-size: 10.5px; color: var(--dim); font-weight: 600;
+    letter-spacing: .6px; margin: 13px 2px 7px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sec::after { content: ""; flex: 1; height: 1px; background: var(--bd); }
+
+  /* 服务器项 */
+  .srv {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--card); border: 1px solid var(--bd);
+    border-radius: 10px; padding: 8px 10px; margin-bottom: 6px;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .srv:hover { background: var(--card2); }
+  .srv.sel { border-color: var(--acc); background: rgba(61,90,254,.10); }
+  .srv .nm { font-size: 12.5px; font-weight: 600; }
+  .srv .ip { font-size: 10.5px; color: var(--dim); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .srv .st { margin-left: auto; text-align: right; font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+  .srv .st b { font-weight: 600; }
+  .srv.act .nm::after {
+    content: "使用中"; font-size: 9.5px; font-weight: 400;
+    color: #9fb4ff; background: rgba(61,90,254,.16);
+    border: 1px solid rgba(61,90,254,.4);
+    border-radius: 4px; padding: 0 4px; margin-left: 6px; vertical-align: 1px;
+  }
+
+  /* 设置 */
+  .opt {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 0;
+  }
+  .opt label { flex: none; font-size: 12.5px; }
+  .opt .val { margin-left: auto; font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; min-width: 34px; text-align: right; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; height: 3px; border-radius: 2px; background: #33333f; outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--acc); border: 2px solid #0e0e16; cursor: pointer;
+  }
+  .chk { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12.5px; }
+  .chk input { accent-color: var(--acc); width: 14px; height: 14px; cursor: pointer; }
+
+  .ft { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; padding: 8px 10px; border-radius: 9px; cursor: pointer;
+    background: var(--card2); color: #d8d8e8;
+    border: 1px solid var(--bd); font-size: 12.5px; font-family: inherit;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover { background: #262633; border-color: #3a3a4c; }
+  button.pri { background: var(--acc); border-color: var(--acc); color: #fff; }
+  button.pri:hover { background: #4b66ff; }
+
+  .note {
+    margin-top: 11px; padding: 8px 10px;
+    background: rgba(61,90,254,.07); border: 1px solid rgba(61,90,254,.22);
+    border-radius: 9px; font-size: 11px; color: #a8b4d8; line-height: 1.6;
+  }
+  .note b { color: #cfd8ff; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="hd">
+  <div class="logo"><i></i><i></i><i></i></div>
+  <div class="ttl">火羽直播实时字幕<small>ひのめ 直播同传</small></div>
+  <label class="sw"><input type="checkbox" id="enabled" checked><span></span></label>
+</div>
+
+<div class="body">
+
+  <div class="card">
+    <div class="row">
+      <span class="dot" id="dot"></span>
+      <span id="sseText" style="font-size:12.5px;font-weight:600">未连接</span>
+      <span class="grow"></span>
+      <span class="tag" id="latTag">—</span>
+    </div>
+    <div class="meta" id="metaText">正在读取状态…</div>
+  </div>
+
+  <div class="sec">字幕服务器</div>
+  <div id="srvList"></div>
+
+  <div class="sec">显示效果</div>
+  <div class="opt">
+    <label>字号</label>
+    <input type="range" id="fontSize" min="14" max="52" step="1">
+    <span class="val" id="fontSizeVal"></span>
+  </div>
+  <div class="opt">
+    <label>最多行数</label>
+    <input type="range" id="maxLines" min="1" max="6" step="1">
+    <span class="val" id="maxLinesVal"></span>
+  </div>
+  <div class="opt">
+    <label>底部距离</label>
+    <input type="range" id="bottomPct" min="2" max="40" step="1">
+    <span class="val" id="bottomPctVal"></span>
+  </div>
+  <div class="opt">
+    <label>字幕延迟</label>
+    <input type="range" id="delay" min="0" max="30" step="1">
+    <span class="val" id="delayVal"></span>
+  </div>
+  <div class="opt">
+    <label class="chk"><input type="checkbox" id="showJa">显示日语原文</label>
+  </div>
+  <div class="opt">
+    <label class="chk"><input type="checkbox" id="onlyThisRoom">仅在火羽直播间（22748536）生效</label>
+  </div>
+
+  <div class="ft">
+    <button id="reconnect">重新探测线路</button>
+    <button id="openRoom" class="pri">打开直播间</button>
+  </div>
+
+  <div class="note">
+    <b>提示：</b>刷新直播页后配置即时生效。字幕通过扩展后台长连接获取，页面本身的脚本不会碰这两个 http 地址。
+  </div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

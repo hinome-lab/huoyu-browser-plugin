@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>mock live page</title>
+<style>
+  html, body { margin: 0; background: #0a0a0f; color: #bbb; font: 13px/1.6 system-ui, sans-serif; }
+  #barbox { padding: 10px 14px; color: #777; }
+  #live-player {
+    position: relative; width: 1024px; height: 576px; margin: 10px auto;
+    background: #000; border-radius: 10px; overflow: hidden;
+  }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .bili-danmaku { position: absolute; inset: 0; pointer-events: none; }
+  .bili-danmaku span {
+    position: absolute; white-space: nowrap; color: #fff; font-weight: 600;
+    font-size: 16px; text-shadow: 0 0 4px #000;
+  }
+</style>
+</head>
+<body>
+
+<div id="barbox">
+  mock 直播间：真实可播放的 &lt;video&gt; + 弹幕层。字幕出现即说明 content.js 的定位与渲染正常。
+</div>
+
+<div id="live-player">
+  <video id="v" playsinline autoplay muted></video>
+  <div class="bili-danmaku" id="dm"></div>
+</div>
+
+<script>
+/* 1) 打桩 chrome API，让 content.js 以为自己在真实扩展里 */
+const CFG = {
+  enabled: true, serverMode: 'auto', fontSize: 26, maxLines: 3,
+  showJa: true, bottomPct: 11, delay: 0, onlyThisRoom: false, roomId: '22748536'
+};
+let listener = null;
+
+window.chrome = {
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      if (cb) cb({ ok: true, cfg: CFG, state: { sse: 'open', activeId: 's1', health: {}, lastError: '', meta: null } });
+    },
+    onMessage: { addListener(fn) { listener = fn; } }
+  }
+};
+
+/* 2) canvas → MediaStream，产生带尺寸的可播放 video */
+const cv = document.createElement('canvas');
+cv.width = 1280; cv.height = 720;
+const cx = cv.getContext('2d');
+
+function paint(t) {
+  const g = cx.createLinearGradient(0, 0, 1280, 720);
+  g.addColorStop(0, '#1a2340'); g.addColorStop(0.5, '#241a33'); g.addColorStop(1, '#10202a');
+  cx.fillStyle = g; cx.fillRect(0, 0, 1280, 720);
+  for (let i = 0; i < 5; i++) {
+    const a = t / 2000 + i * 1.3;
+    cx.beginPath();
+    cx.arc(640 + Math.cos(a) * 320, 360 + Math.sin(a * 1.4) * 190, 130, 0, Math.PI * 2);
+    cx.fillStyle = 'rgba(' + (80 + i * 30) + ',' + (110 + i * 18) + ',255,0.14)';
+    cx.fill();
+  }
+  cx.fillStyle = 'rgba(255,255,255,0.14)';
+  cx.font = '600 22px sans-serif'; cx.textAlign = 'center';
+  cx.fillText('MOCK LIVE STREAM · bilibili player area', 640, 360);
+  requestAnimationFrame(paint);
+}
+requestAnimationFrame(paint);
+
+const video = document.getElementById('v');
+video.srcObject = cv.captureStream(12);
+video.play().catch(function () {});
+
+/* 3) 几条假弹幕，用来确认字幕压在弹幕之上 */
+['老板大气', '哈哈哈哈', '这个反应笑死', '火羽辛苦啦', '草'].forEach(function (t, i) {
+  const s = document.createElement('span');
+  s.textContent = t;
+  s.style.top = (18 + i * 13) + '%';
+  s.style.left = (12 + i * 15) + '%';
+  document.getElementById('dm').appendChild(s);
+});
+
+/* 4) 注入被测脚本 */
+const sc = document.createElement('script');
+sc.src = '../content.js';
+document.body.appendChild(sc);
+
+/* 5) 模拟 SSE 推送 */
+const SAMPLE = [
+  { ja: 'みんな、こんばんは！今日も配信見に来てくれてありがとう', zh: '大家晚上好！今天也谢谢你们来看直播' },
+  { ja: 'ちょっと待って、今マイクの調子が悪いみたい', zh: '等一下，麦克风好像有点问题' },
+  { ja: 'あ、治った！じゃあ始めようか', zh: '啊，好了！那我们开始吧' }
+];
+
+let seq = 1;
+function emit(line) {
+  if (!listener) return;
+  listener({ target: 'content', kind: 'sse', data: { type: 'line', line: Object.assign({ id: seq++ }, line) } });
+}
+
+setTimeout(function () {
+  emit(SAMPLE[0]);
+  setTimeout(function () { emit(SAMPLE[1]); }, 400);
+  setTimeout(function () {
+    emit(SAMPLE[2]);
+    setTimeout(function () {
+      const h = document.getElementById('hy-live-sub-host');
+      if (h && h.shadowRoot) {
+        h.shadowRoot.querySelectorAll('.row').forEach(function (r) {
+          r.style.animation = 'none';
+          r.style.opacity = '1';
+        });
+      }
+      document.title = 'READY';
+    }, 500);
+  }, 900);
+}, 700);
+</script>
+
+</body>
+</html>

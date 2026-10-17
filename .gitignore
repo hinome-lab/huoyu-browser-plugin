@@ -1,0 +1,14 @@
+# 临时探测与测试产物
+.probe/
+tests/out/
+
+# 编辑器 / 助手工作目录
+.workbuddy/
+
+# 依赖与系统文件
+node_modules/
+.DS_Store
+Thumbs.db
+
+# 打包产物
+*.zip

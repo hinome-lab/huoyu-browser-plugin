@@ -1,0 +1,5 @@
+# 统一用 LF，避免 Windows 检出时行尾变成 CRLF 造成整文件 diff
+* text=auto eol=lf
+
+*.png binary
+*.zip binary

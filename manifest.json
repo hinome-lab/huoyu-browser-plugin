@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "火羽直播实时字幕",
+  "version": "1.0.0",
+  "description": "在哔哩哔哩直播间观看火羽时，自动从可用字幕服务器拉取日语→中文翻译，并叠加在直播画面上。",
+  "minimum_chrome_version": "109",
+
+  "permissions": ["storage", "offscreen", "tabs"],
+  "host_permissions": [
+    "http://123.60.104.22/*",
+    "http://106.15.35.175/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://live.bilibili.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "action": {
+    "default_title": "火羽直播实时字幕",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

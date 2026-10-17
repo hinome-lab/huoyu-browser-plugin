@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>字幕效果预览 · 火羽直播实时字幕</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0a0a0f; color: #e8e8f0;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-height: 100vh; padding: 22px 18px 40px;
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  h1 { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  h1 small { display: block; font-size: 11.5px; color: #7a7a8c; font-weight: 400; margin-top: 3px; }
+
+  .stage {
+    width: min(1080px, 100%);
+    aspect-ratio: 16 / 9;
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #000;
+    border: 1px solid #23232f;
+    box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  /* 假装这是直播画面 */
+  .fakevid {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 26% 34%, rgba(88,112,255,.30), transparent 46%),
+      radial-gradient(circle at 74% 62%, rgba(255,120,180,.22), transparent 48%),
+      radial-gradient(circle at 52% 88%, rgba(60,200,190,.18), transparent 52%),
+      linear-gradient(160deg, #161a2c 0%, #0e0f18 55%, #14101c 100%);
+  }
+  .fakevid::after {
+    content: "模拟直播画面（真实使用时这里是 B 站播放器）";
+    position: absolute; left: 50%; top: 42%; transform: translate(-50%,-50%);
+    font-size: 12px; color: rgba(255,255,255,.16); letter-spacing: 1px; white-space: nowrap;
+  }
+  .danmaku-layer {
+    position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+  }
+  .dmk {
+    position: absolute; left: 100%; white-space: nowrap;
+    font-size: 15px; font-weight: 600; color: rgba(255,255,255,.82);
+    text-shadow: 0 0 4px rgba(0,0,0,.9), 0 1px 3px rgba(0,0,0,.95);
+    animation: dmk-move linear forwards;
+  }
+  @keyframes dmk-move {
+    from { transform: translateX(0); }
+    to   { transform: translateX(calc(-100vw - 100%)); }
+  }
+
+  /* ====== 字幕层（与扩展 content.js 完全一致的样式） ====== */
+  .sub-host {
+    position: absolute; inset: 0;
+    pointer-events: none; z-index: 30;
+  }
+  .wrap {
+    position: absolute; left: 0; right: 0;
+    bottom: 11%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-end;
+    gap: 6px; padding: 0 3.5%;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    text-align: center;
+    -webkit-font-smoothing: antialiased;
+  }
+  .row { max-width: 100%; animation: hy-in .22s cubic-bezier(.22,.61,.36,1) both; }
+  @keyframes hy-in {
+    from { opacity: 0; transform: translateY(.22em); }
+    to   { opacity: 1; transform: none; }
+  }
+  .zh {
+    display: block; color: #fff; font-weight: 700;
+    font-size: 26px; line-height: 1.3; letter-spacing: .01em;
+    word-break: break-word; text-wrap: balance;
+    paint-order: stroke fill;
+    -webkit-text-stroke: .012em rgba(0,0,0,.32);
+    text-shadow:
+      0 0 1px rgba(0,0,0,.98),
+      0 0 4px rgba(0,0,0,.92),
+      0 2px 5px rgba(0,0,0,.95),
+      0 0 16px rgba(0,0,0,.7);
+  }
+  .ja {
+    display: block; margin-top: .16em; color: #9dc0ff; font-weight: 500;
+    font-size: 14.6px; line-height: 1.35; word-break: break-word;
+    text-shadow: 0 0 3px rgba(0,0,0,.95), 0 1px 4px rgba(0,0,0,.9);
+  }
+  .ja.hide { display: none; }
+  .row.hist .zh {
+    font-size: 16.6px; font-weight: 600; color: rgba(255,255,255,.66);
+  }
+  .row.hist .ja { display: none; }
+  .row.pending .zh { color: rgba(255,255,255,.82); font-weight: 500; }
+
+  /* ====== 控制面板 ====== */
+  .panel {
+    width: min(1080px, 100%);
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: #12121a; border: 1px solid #23232f; border-radius: 12px;
+    padding: 12px 14px;
+  }
+  button {
+    background: #1d1d28; color: #d8d8e8; border: 1px solid #2c2c3c;
+    border-radius: 9px; padding: 7px 13px; font-size: 12.5px;
+    font-family: inherit; cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  button:hover { background: #262633; border-color: #3a3a4c; }
+  button.pri { background: #3d5afe; border-color: #3d5afe; color: #fff; }
+  button.pri:hover { background: #4b66ff; }
+  .ctl { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .ctl input[type=range] {
+    -webkit-appearance: none; width: 104px; height: 3px; border-radius: 2px;
+    background: #33333f; outline: none;
+  }
+  .ctl input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: #3d5afe; border: 2px solid #0e0e16; cursor: pointer;
+  }
+  .val { font-family: ui-monospace, monospace; font-size: 11px; color: #8a8a9c; min-width: 36px; }
+  .sp { flex: 1; }
+  .status { font-size: 11.5px; color: #7a7a8c; }
+  .status.on { color: #3ddc84; }
+  .status.err { color: #e5484d; }
+  .tips {
+    width: min(1080px, 100%); font-size: 12px; color: #6f6f80; line-height: 1.75;
+    border-left: 2px solid #3d5afe33; padding-left: 11px;
+  }
+  .tips b { color: #a9b4d8; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>字幕效果预览
+  <small>这是渲染效果的独立演示页，用来调字号/行数；真正生效的是扩展本身</small>
+</h1>
+
+<div class="stage" id="stage">
+  <div class="fakevid"></div>
+  <div class="danmaku-layer" id="dmLayer"></div>
+  <div class="sub-host" id="host">
+    <div class="wrap" id="wrap" style="bottom:11%"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <button class="pri" id="btnNext">播下一条</button>
+  <button id="btnAuto">自动播放：开</button>
+  <button id="btnReset">重来</button>
+  <span class="sp"></span>
+  <div class="ctl">字号 <input type="range" id="fs" min="16" max="52" value="26"><span class="val" id="fsVal">26px</span></div>
+  <div class="ctl">行数 <input type="range" id="ml" min="1" max="6" value="3"><span class="val" id="mlVal">3 行</span></div>
+  <div class="ctl"><label><input type="checkbox" id="ja" checked> 日文</label></div>
+</div>
+
+<div class="panel" style="gap:12px">
+  <button id="btnLive">连接真实服务器</button>
+  <span class="status" id="liveStatus">未连接</span>
+  <span class="sp"></span>
+  <span class="status">目标：http://123.60.104.22:6006/?k=hy</span>
+</div>
+
+<div class="tips">
+  <b>关于字号：</b>扩展里字号会按播放器高度自动等比缩放（以 720p 为基准），所以这里的预览尺寸是 720p 观感。<br>
+  <b>关于延迟：</b>直播画面有缓冲，字幕却是实时的，两者天然错位。扩展里「字幕延迟」滑块就是用来把这层偏差压回去的。
+</div>
+
+<script>
+/* ============ 模拟数据（结构与服务器 line 事件一致） ============ */
+const SCRIPT = [
+  { ja: 'みんな、こんばんは！今日も配信見に来てくれてありがとう', zh: '大家晚上好！今天也谢谢你们来看直播' },
+  { ja: 'ちょっと待って、今マイクの調子が悪いみたい', zh: '等一下，麦克风好像有点问题' },
+  { ja: 'あ、治った！じゃあ始めようか', zh: '啊，好了！那我们开始吧' },
+  { ja: 'このゲーム、実は初めてなんだよね。うまくできるかな', zh: '这个游戏其实是第一次玩，能玩好吗' },
+  { ja: 'うわ、めっちゃ怖い…誰か助けて', zh: '哇，好可怕…谁来救救我' },
+  { ja: 'ねえねえ、コメント読むね。ちょっと待って', zh: '诶诶，我来读评论，等一下' },
+  { ja: '「火羽ちゃんかわいい」って書いてくれてありがとう！', zh: '谢谢有人写「火羽好可爱」！' },
+  { ja: '今日はね、新しい曲の練習もしたいと思ってるの', zh: '今天呢，也想练一下新歌' },
+  { ja: 'ちょっとだけ歌っていい？', zh: '可以唱一小段吗？' },
+  { ja: 'あ、この後ね、みんなと一緒にゲームやろうと思ってる', zh: '啊，之后呢，想和大家一起玩游戏' }
+];
+
+const HOST = document.getElementById('host');
+const WRAP = document.getElementById('wrap');
+const DM_LAYER = document.getElementById('dmLayer');
+const FS = document.getElementById('fs');
+const ML = document.getElementById('ml');
+const JATOG = document.getElementById('ja');
+const fsVal = document.getElementById('fsVal');
+const mlVal = document.getElementById('mlVal');
+const stage = document.getElementById('stage');
+
+let lines = [];
+let idx = 0;
+let showJa = true;
+let maxLines = 3;
+let auto = true;
+let autoTimer = null;
+
+/* ============ 渲染（与 content.js 同逻辑） ============ */
+function render() {
+  const show = lines.slice(-maxLines);
+  const frag = document.createDocumentFragment();
+
+  show.forEach(function (line, i) {
+    const isCur = i === show.length - 1;
+    const row = document.createElement('div');
+    row.className = 'row' + (isCur ? ' cur' : ' hist');
+
+    const zh = document.createElement('span');
+    zh.className = 'zh';
+    zh.textContent = line.zh || line.ja;
+    if (!line.zh) row.classList.add('pending');
+
+    const ja = document.createElement('span');
+    ja.className = 'ja' + ((showJa && line.ja && line.ja !== line.zh) ? '' : ' hide');
+    ja.textContent = (line.ja && line.ja !== line.zh) ? line.ja : '';
+
+    row.appendChild(zh);
+    row.appendChild(ja);
+    frag.appendChild(row);
+  });
+
+  WRAP.replaceChildren(frag);
+
+  const rows = WRAP.children;
+  for (let i = 0; i < rows.length - 1; i++) {
+    const depth = rows.length - 1 - i;
+    rows[i].style.opacity = String(Math.max(0.34, 1 - depth * 0.26));
+  }
+}
+
+/* ============ 控件 ============ */
+function applyScale() {
+  const h = stage.clientHeight || 540;
+  const scale = Math.min(1.95, Math.max(0.6, h / 720));
+  WRAP.style.setProperty('--hy-size', Math.round(Number(FS.value) * scale) + 'px');
+}
+
+FS.addEventListener('input', function () {
+  fsVal.textContent = FS.value + 'px';
+  applyScale();
+});
+
+ML.addEventListener('input', function () {
+  maxLines = Number(ML.value);
+  mlVal.textContent = maxLines + ' 行';
+  render();
+});
+
+JATOG.addEventListener('change', function () {
+  showJa = JATOG.checked;
+  render();
+});
+
+document.getElementById('btnNext').addEventListener('click', nextLine);
+document.getElementById('btnReset').addEventListener('click', function () {
+  lines = []; idx = 0; render(); spurtDanmaku(3);
+});
+
+document.getElementById('btnAuto').addEventListener('click', function (e) {
+  auto = !auto;
+  e.target.textContent = '自动播放：' + (auto ? '开' : '关');
+  scheduleAuto();
+});
+
+function nextLine() {
+  const s = SCRIPT[idx % SCRIPT.length];
+  idx += 1;
+  lines.push({ id: idx, ja: s.ja, zh: s.zh });
+  if (lines.length > 12) lines = lines.slice(-8);
+  render();
+  spurtDanmaku(2);
+}
+
+function scheduleAuto() {
+  if (autoTimer) clearInterval(autoTimer);
+  if (!auto) return;
+  autoTimer = setInterval(nextLine, 3600);
+}
+
+/* ============ 假弹幕 ============ */
+const DMK = ['老板大气', '哈哈哈哈', '这个反应笑死', '[花]', '火羽辛苦啦', '草', '太强了吧',
+  '晚好晚好', '麦克风好了吗', '弹幕护体', '这个bgm好听', '第一次看，好可爱'];
+
+function spurtDanmaku(n) {
+  for (let i = 0; i < n; i++) {
+    const el = document.createElement('div');
+    el.className = 'dmk';
+    el.textContent = DMK[Math.floor(Math.random() * DMK.length)];
+    el.style.top = (6 + Math.random() * 46) + '%';
+    const dur = 9 + Math.random() * 5;
+    el.style.animationDuration = dur + 's';
+    DM_LAYER.appendChild(el);
+    setTimeout(function () { el.remove(); }, dur * 1000 + 200);
+  }
+}
+
+/* ============ 真实服务器（可选） ============ */
+let es = null;
+const liveStatus = document.getElementById('liveStatus');
+const btnLive = document.getElementById('btnLive');
+
+btnLive.addEventListener('click', function () {
+  if (es) {
+    es.close(); es = null;
+    liveStatus.textContent = '已断开';
+    liveStatus.className = 'status';
+    btnLive.textContent = '连接真实服务器';
+    return;
+  }
+
+  liveStatus.textContent = '连接中…';
+  liveStatus.className = 'status';
+  try {
+    es = new EventSource('http://123.60.104.22:6006/events?k=hy');
+  } catch (e) {
+    liveStatus.textContent = '建立连接失败';
+    liveStatus.className = 'status err';
+    es = null;
+    return;
+  }
+
+  es.onopen = function () {
+    liveStatus.textContent = '已连接（等主播开播才有字幕）';
+    liveStatus.className = 'status on';
+    btnLive.textContent = '断开';
+  };
+  es.onerror = function () {
+    liveStatus.textContent = '连接中断';
+    liveStatus.className = 'status err';
+  };
+  es.onmessage = function (ev) {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (x) { return; }
+    if (d.type === 'snapshot') {
+      lines = (d.lines || []).slice(-8);
+      render();
+      if (d.msg) liveStatus.textContent = d.msg;
+    } else if (d.type === 'line') {
+      lines.push(d.line);
+      if (lines.length > 12) lines = lines.slice(-8);
+      render();
+    } else if (d.type === 'line_upd') {
+      const it = lines.find(function (l) { return l.id === d.id; });
+      if (it) { it.zh = d.zh; render(); }
+    } else if (d.type === 'reset') {
+      lines = []; render();
+    }
+  };
+});
+
+/* ============ 启动 ============ */
+window.addEventListener('resize', applyScale);
+applyScale();
+// 先铺几条「已经说过的」，直接看到完整效果
+for (let i = 0; i < 3; i++) {
+  const s = SCRIPT[i];
+  idx = i + 1;
+  lines.push({ id: idx, ja: s.ja, zh: s.zh });
+}
+render();
+scheduleAuto();
+spurtDanmaku(5);
+setInterval(function () { if (!auto) spurtDanmaku(1); }, 4200);
+</script>
+</body>
+</html>
