@@ -31,9 +31,15 @@
 
 <script>
 /* 1) 打桩 chrome API，让 content.js 以为自己在真实扩展里 */
+const QS = new URLSearchParams(location.search);
+const num = (k, d) => (QS.has(k) ? Number(QS.get(k)) : d);
 const CFG = {
-  enabled: true, serverMode: 'auto', fontSize: 26, maxLines: 3,
-  showJa: true, bottomPct: 11, delay: 0
+  enabled: true, serverMode: 'auto',
+  fontSize: num('fs', 26),      // ?fs=44 试大字号
+  maxLines: num('ml', 3),
+  showJa: QS.get('ja') !== '0',
+  bottomPct: num('bp', 11),     // ?bp=28 试抬高位
+  delay: 0
 };
 const ROOM = (location.pathname.match(/^\/(\d{1,12})/) || [])[1] || '';
 const SUPPORTED = ['22748536', '21399689'].includes(ROOM);

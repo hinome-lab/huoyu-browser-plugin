@@ -240,9 +240,11 @@
     host.style.display = 'block';
 
     // 字号按播放器高度等比缩放（以 720p 为基准）
+    // 注意：变量必须设在宿主元素上，ShadowRoot 没有 style 属性，
+    //       CSS 自定义属性会从宿主自然继承进 shadow tree。
     const scale = Math.min(1.95, Math.max(0.6, r.height / 720));
-    root.style.setProperty('--hy-size', Math.round(cfg.fontSize * scale) + 'px');
-    root.style.setProperty('--hy-bottom', cfg.bottomPct + '%');
+    host.style.setProperty('--hy-size', Math.round(cfg.fontSize * scale) + 'px');
+    host.style.setProperty('--hy-bottom', cfg.bottomPct + '%');
   }
 
   let rafId = 0;
