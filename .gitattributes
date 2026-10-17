@@ -2,6 +2,6 @@
 * text=auto eol=lf
 *.png binary
 *.zip binary
-# Windows 批处理必须保持 CRLF，否则 cmd 解析异常
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# Windows 批处理必须保持原始 CRLF 字节（Pages 直接按仓库内容下载）
+*.bat -text
+*.cmd -text
